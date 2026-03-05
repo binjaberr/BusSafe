@@ -1,0 +1,1432 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>BusSafe — نظام تتبع الحافلات المدرسية</title>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;900&display=swap" rel="stylesheet">
+
+<!-- ═══════════════════════════════════════
+     Firebase SDK — النسخة المجانية
+     ستضع مفاتيحك هنا بعد إنشاء المشروع
+═══════════════════════════════════════ -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getDatabase, ref, set, push, onValue, serverTimestamp }
+    from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+  /* ══════════════════════════════════════
+     ⚠️  ضع مفاتيح Firebase هنا
+     اتبع الخطوات في نهاية الصفحة
+  ══════════════════════════════════════ */
+  const firebaseConfig = {
+    apiKey:            "ضع_API_KEY_هنا",
+    authDomain:        "ضع_AUTH_DOMAIN_هنا",
+    databaseURL:       "ضع_DATABASE_URL_هنا",
+    projectId:         "ضع_PROJECT_ID_هنا",
+    storageBucket:     "ضع_STORAGE_BUCKET_هنا",
+    messagingSenderId: "ضع_SENDER_ID_هنا",
+    appId:             "ضع_APP_ID_هنا"
+  };
+
+  // ── تهيئة Firebase ──
+  let app, db;
+  let firebaseReady = false;
+
+  try {
+    app = initializeApp(firebaseConfig);
+    db  = getDatabase(app);
+    firebaseReady = true;
+    console.log("✅ Firebase متصل");
+  } catch(e) {
+    console.warn("⚠️ Firebase غير مهيأ — وضع تجريبي محلي");
+  }
+
+  /* ══════════════════════════════════════
+     الدوال المُصدَّرة للنافذة
+  ══════════════════════════════════════ */
+
+  // إرسال حدث للـ Firebase
+  window.fbSendEvent = async function(type, data) {
+    if (!firebaseReady) {
+      // وضع تجريبي — بدون Firebase
+      window.localEventHandler(type, data);
+      return;
+    }
+    try {
+      const tripRef = ref(db, 'bussafe/trip');
+      const logsRef = ref(db, 'bussafe/logs');
+
+      await set(tripRef, {
+        state:     type,
+        data:      data,
+        timestamp: serverTimestamp()
+      });
+
+      await push(logsRef, {
+        type:      type,
+        message:   data.message,
+        student:   data.student || null,
+        timestamp: serverTimestamp(),
+        time:      data.time
+      });
+
+    } catch(e) {
+      console.error("Firebase error:", e);
+      window.localEventHandler(type, data);
+    }
+  };
+
+  // تحديث حالة طالب
+  window.fbUpdateStudent = async function(studentId, status) {
+    if (!firebaseReady) {
+      window.localStudentUpdate(studentId, status);
+      return;
+    }
+    try {
+      const sRef = ref(db, `bussafe/students/${studentId}`);
+      await set(sRef, { status, updatedAt: serverTimestamp() });
+    } catch(e) {
+      window.localStudentUpdate(studentId, status);
+    }
+  };
+
+  // الاستماع للتغييرات (لصفحة ولي الأمر)
+  window.fbListen = function() {
+    if (!firebaseReady) return;
+
+    // الاستماع لحالة الرحلة
+    onValue(ref(db, 'bussafe/trip'), (snap) => {
+      const data = snap.val();
+      if (data) window.onTripUpdate(data);
+    });
+
+    // الاستماع للإشعارات
+    onValue(ref(db, 'bussafe/logs'), (snap) => {
+      const data = snap.val();
+      if (data) {
+        const logs = Object.values(data).sort((a,b) => (b.timestamp||0) - (a.timestamp||0));
+        window.onLogsUpdate(logs);
+      }
+    });
+
+    // الاستماع لحالات الطلاب
+    onValue(ref(db, 'bussafe/students'), (snap) => {
+      const data = snap.val();
+      if (data) window.onStudentsUpdate(data);
+    });
+  };
+
+</script>
+
+<style>
+/* ════════════════════════════════════════
+   DESIGN SYSTEM
+════════════════════════════════════════ */
+:root {
+  --navy:    #0B1F3A;
+  --navy2:   #1a3a5c;
+  --green:   #00D68F;
+  --green2:  #00b87a;
+  --amber:   #FFB300;
+  --red:     #FF4757;
+  --blue:    #3B82F6;
+  --bg:      #EEF2F7;
+  --card:    #FFFFFF;
+  --text:    #0B1F3A;
+  --muted:   #6B7A8D;
+  --border:  #DDE4EE;
+  --shadow:  0 2px 16px rgba(11,31,58,0.09);
+}
+
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+
+body {
+  font-family: 'Cairo', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ── SETUP SCREEN ── */
+#setupScreen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: linear-gradient(135deg, #0B1F3A 0%, #1a3a5c 100%);
+}
+.setup-card {
+  background: white;
+  border-radius: 24px;
+  padding: 32px 28px;
+  max-width: 420px;
+  width: 100%;
+  box-shadow: 0 30px 80px rgba(0,0,0,0.3);
+}
+.setup-logo {
+  text-align: center;
+  margin-bottom: 28px;
+}
+.setup-logo .logo-icon {
+  width: 72px; height: 72px;
+  background: linear-gradient(135deg, var(--green), var(--green2));
+  border-radius: 20px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 34px;
+  margin: 0 auto 12px;
+  box-shadow: 0 8px 24px rgba(0,214,143,0.35);
+}
+.setup-logo h1 { font-size: 24px; font-weight: 900; }
+.setup-logo p  { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.role-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.role-btn {
+  border: 2px solid var(--border);
+  border-radius: 14px;
+  padding: 16px;
+  background: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  transition: all 0.2s;
+  text-align: right;
+  font-family: 'Cairo', sans-serif;
+}
+.role-btn:hover { border-color: var(--green); background: #f0fdf8; transform: translateY(-1px); }
+.role-btn:active { transform: scale(0.98); }
+.role-ico {
+  width: 48px; height: 48px;
+  border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px;
+  flex-shrink: 0;
+}
+.role-btn .r-name { font-size: 14px; font-weight: 800; }
+.role-btn .r-desc { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+/* ── MAIN APP ── */
+#appScreen { display: none; }
+
+/* ── TOP BAR ── */
+.topbar {
+  background: var(--navy);
+  height: 56px;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 10px;
+  position: sticky;
+  top: 0;
+  z-index: 200;
+  box-shadow: 0 2px 20px rgba(0,0,0,0.25);
+}
+.topbar-logo { font-size: 16px; font-weight: 900; color: white; }
+.topbar-logo span { color: var(--green); }
+.topbar-role {
+  background: rgba(0,214,143,0.15);
+  color: var(--green);
+  border: 1px solid rgba(0,214,143,0.25);
+  padding: 4px 10px;
+  border-radius: 100px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.topbar-fb {
+  margin-right: auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 700;
+}
+.fb-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  animation: fbPulse 2s infinite;
+}
+.fb-dot.offline { background: var(--amber); animation: none; }
+@keyframes fbPulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+.topbar-fb .fb-label { color: rgba(255,255,255,0.6); }
+.back-btn {
+  background: rgba(255,255,255,0.1);
+  border: none; color: white;
+  width: 34px; height: 34px;
+  border-radius: 9px;
+  font-size: 16px;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+
+/* ── PAGE ── */
+.page { display: none; padding: 16px; max-width: 540px; margin: 0 auto; padding-bottom: 40px; }
+.page.active { display: block; }
+
+/* ── CARDS ── */
+.card {
+  background: var(--card);
+  border-radius: 18px;
+  padding: 18px;
+  margin-bottom: 14px;
+  box-shadow: var(--shadow);
+  border: 1px solid rgba(255,255,255,0.8);
+}
+.card-title {
+  font-size: 13px;
+  font-weight: 800;
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.sec-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.sec-label::before {
+  content: '';
+  width: 3px; height: 13px;
+  background: var(--green);
+  border-radius: 2px;
+  display: inline-block;
+}
+
+/* ── HERO STATUS ── */
+.hero {
+  border-radius: 20px;
+  padding: 22px 20px;
+  color: white;
+  margin-bottom: 16px;
+  position: relative;
+  overflow: hidden;
+  min-height: 130px;
+  transition: background 0.5s ease;
+}
+.hero::before {
+  content: '';
+  position: absolute;
+  top: -40px; right: -40px;
+  width: 160px; height: 160px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.07);
+}
+.hero-state-idle    { background: linear-gradient(135deg, #1e293b, #334155); }
+.hero-state-started { background: linear-gradient(135deg, #1e3a8a, #1d4ed8); }
+.hero-state-onbus   { background: linear-gradient(135deg, #065f46, #047857); }
+.hero-state-arrived { background: linear-gradient(135deg, #3730a3, #4f46e5); }
+.hero-state-return  { background: linear-gradient(135deg, #92400e, #b45309); }
+.hero-state-sos     { background: linear-gradient(135deg, #7f1d1d, #dc2626); animation: sosBg 1s infinite; }
+@keyframes sosBg { 0%,100%{filter:brightness(1)} 50%{filter:brightness(1.2)} }
+.hero-ico  { font-size: 40px; margin-bottom: 8px; }
+.hero-lbl  { font-size: 11px; opacity: 0.65; margin-bottom: 4px; }
+.hero-val  { font-size: 19px; font-weight: 900; line-height: 1.2; margin-bottom: 5px; }
+.hero-sub  { font-size: 12px; opacity: 0.75; }
+.hero-time {
+  position: absolute;
+  bottom: 16px; left: 16px;
+  background: rgba(255,255,255,0.15);
+  padding: 4px 11px;
+  border-radius: 100px;
+  font-size: 10px;
+  font-weight: 700;
+}
+.live-badge {
+  position: absolute;
+  top: 16px; left: 16px;
+  background: rgba(255,255,255,0.15);
+  padding: 4px 10px;
+  border-radius: 100px;
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.live-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  animation: fbPulse 1s infinite;
+}
+
+/* ── TRIP TIMELINE ── */
+.timeline {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  padding: 6px 0;
+}
+.tl-step {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.tl-dot {
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  background: var(--border);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px;
+  border: 2px solid var(--border);
+  transition: all 0.4s;
+  position: relative;
+  z-index: 2;
+}
+.tl-step.done .tl-dot   { background: var(--green); border-color: var(--green); }
+.tl-step.active .tl-dot {
+  background: var(--navy);
+  border-color: var(--navy);
+  box-shadow: 0 0 0 5px rgba(11,31,58,0.12);
+  animation: tlPulse 1.5s infinite;
+}
+@keyframes tlPulse { 0%,100%{box-shadow:0 0 0 5px rgba(11,31,58,0.12)} 50%{box-shadow:0 0 0 9px rgba(11,31,58,0.05)} }
+.tl-lbl { font-size: 9px; font-weight: 700; color: var(--muted); text-align: center; }
+.tl-step.done .tl-lbl, .tl-step.active .tl-lbl { color: var(--text); }
+.tl-line {
+  flex: 1;
+  height: 2px;
+  background: var(--border);
+  margin-top: 15px;
+  transition: background 0.5s;
+}
+.tl-line.done { background: var(--green); }
+.prog-bar {
+  height: 4px;
+  background: var(--border);
+  border-radius: 100px;
+  overflow: hidden;
+  margin-top: 12px;
+}
+.prog-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--green2), var(--green));
+  border-radius: 100px;
+  transition: width 0.8s ease;
+}
+
+/* ── DRIVER ACTION BUTTONS ── */
+.action-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.act-btn {
+  border: none;
+  border-radius: 16px;
+  padding: 16px 12px;
+  font-family: 'Cairo', sans-serif;
+  font-weight: 800;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.2s;
+  position: relative;
+  overflow: hidden;
+}
+.act-btn::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(255,255,255,0);
+  transition: background 0.15s;
+}
+.act-btn:active::after { background: rgba(255,255,255,0.2); }
+.act-btn:active { transform: scale(0.96); }
+.act-ico { font-size: 26px; }
+.act-start  { background: linear-gradient(135deg,#00D68F,#00b87a); color: var(--navy); }
+.act-arrive { background: linear-gradient(135deg,#4f46e5,#3730a3); color: white; }
+.act-return { background: linear-gradient(135deg,#0ea5e9,#0369a1); color: white; }
+.act-sos    {
+  background: linear-gradient(135deg,#FF4757,#cc0010);
+  color: white;
+  grid-column: 1 / -1;
+  flex-direction: row;
+  justify-content: center;
+  gap: 10px;
+  padding: 14px;
+  animation: sosGlow 2s infinite;
+}
+@keyframes sosGlow {
+  0%,100% { box-shadow: 0 4px 16px rgba(255,71,87,0.3); }
+  50%     { box-shadow: 0 4px 30px rgba(255,71,87,0.7); }
+}
+.act-disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── STUDENTS ── */
+.student-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 12px;
+  background: var(--bg);
+  border-radius: 12px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: 2px solid transparent;
+}
+.student-row:hover { border-color: var(--green); background: #f0fdf9; }
+.student-row:active { transform: scale(0.99); }
+.s-avatar {
+  width: 38px; height: 38px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 900; font-size: 14px;
+  flex-shrink: 0;
+}
+.s-name  { font-size: 13px; font-weight: 800; flex: 1; }
+.s-seat  { font-size: 10px; color: var(--muted); margin-top: 2px; }
+.s-badge {
+  padding: 4px 10px;
+  border-radius: 100px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.sb-wait    { background: #fef9c3; color: #854d0e; }
+.sb-onbus   { background: #dcfce7; color: #166534; }
+.sb-arrived { background: #dbeafe; color: #1e40af; }
+.sb-home    { background: #e0f2fe; color: #0c4a6e; }
+
+/* ── NOTIF ROWS ── */
+.notif-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 13px;
+  border-radius: 12px;
+  margin-bottom: 8px;
+  border-right: 3px solid;
+  animation: slideIn 0.3s ease;
+}
+@keyframes slideIn {
+  from { opacity:0; transform:translateX(-8px); }
+  to   { opacity:1; transform:translateX(0); }
+}
+.notif-green  { border-right-color: var(--green); background: #f0fdf8; }
+.notif-amber  { border-right-color: var(--amber); background: #fffbeb; }
+.notif-red    { border-right-color: var(--red);   background: #fff1f2; }
+.notif-blue   { border-right-color: var(--blue);  background: #eff6ff; }
+.notif-navy   { border-right-color: var(--navy);  background: #f1f5f9; }
+.n-ico    { font-size: 20px; flex-shrink: 0; margin-top: 1px; }
+.n-body   { flex: 1; }
+.n-title  { font-size: 12px; font-weight: 800; }
+.n-sub    { font-size: 10px; color: var(--muted); margin-top: 2px; }
+.n-time   { font-size: 10px; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
+
+/* ── STAT BOXES ── */
+.stat-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin-bottom: 14px; }
+.stat-box {
+  background: var(--card);
+  border-radius: 14px;
+  padding: 14px 10px;
+  text-align: center;
+  box-shadow: var(--shadow);
+  border: 1px solid rgba(255,255,255,0.8);
+}
+.sb-ico { font-size: 22px; margin-bottom: 5px; }
+.sb-val { font-size: 24px; font-weight: 900; line-height: 1; }
+.sb-lbl { font-size: 10px; color: var(--muted); margin-top: 4px; }
+
+/* ── BUTTONS ── */
+.btn {
+  border: none;
+  border-radius: 12px;
+  font-family: 'Cairo', sans-serif;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+.btn:active { transform: scale(0.97); }
+.btn-full    { width: 100%; padding: 14px; font-size: 14px; }
+.btn-green   { background: var(--green); color: var(--navy); }
+.btn-green:hover { background: var(--green2); }
+.btn-navy    { background: var(--navy); color: white; }
+.btn-ghost   { background: var(--bg); color: var(--text); border: 2px solid var(--border); padding: 10px 16px; font-size: 12px; }
+
+/* ── MODAL ── */
+.modal-bg {
+  display: none;
+  position: fixed; inset: 0;
+  background: rgba(11,31,58,0.65);
+  backdrop-filter: blur(8px);
+  z-index: 1000;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.modal-bg.open { display: flex; }
+.modal {
+  background: white;
+  border-radius: 22px;
+  padding: 28px;
+  max-width: 340px;
+  width: 100%;
+  text-align: center;
+  animation: popIn 0.3s cubic-bezier(0.34,1.56,0.64,1);
+  box-shadow: 0 30px 70px rgba(0,0,0,0.25);
+}
+@keyframes popIn { from{transform:scale(0.8);opacity:0} to{transform:scale(1);opacity:1} }
+.modal-ico   { font-size: 50px; margin-bottom: 12px; }
+.modal-title { font-size: 18px; font-weight: 900; margin-bottom: 8px; }
+.modal-desc  { font-size: 12px; color: var(--muted); line-height: 1.8; margin-bottom: 22px; }
+.modal-btns  { display: flex; gap: 10px; }
+.modal-btns button {
+  flex: 1; padding: 13px;
+  border-radius: 12px; border: none;
+  font-family: 'Cairo', sans-serif;
+  font-size: 13px; font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.modal-btns button:active { transform: scale(0.97); }
+.mb-ok        { background: var(--green); color: var(--navy); }
+.mb-ok.danger { background: var(--red);   color: white; }
+.mb-cancel    { background: var(--bg);    color: var(--text); }
+
+/* ── TOAST ── */
+.toast {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%) translateY(100px);
+  background: var(--navy);
+  color: white;
+  padding: 11px 22px;
+  border-radius: 100px;
+  font-size: 12px; font-weight: 700;
+  z-index: 9999;
+  white-space: nowrap;
+  box-shadow: 0 8px 28px rgba(11,31,58,0.3);
+  transition: transform 0.35s cubic-bezier(0.34,1.56,0.64,1);
+  max-width: 90vw;
+}
+.toast.up      { transform: translateX(-50%) translateY(0); }
+.toast.t-green { background: var(--green2); color: white; }
+.toast.t-amber { background: var(--amber);  color: var(--navy); }
+.toast.t-red   { background: var(--red); }
+
+/* ── SETUP GUIDE ── */
+.step-guide { counter-reset: steps; }
+.guide-step {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+  align-items: flex-start;
+}
+.guide-step::before {
+  counter-increment: steps;
+  content: counter(steps);
+  width: 26px; height: 26px;
+  border-radius: 50%;
+  background: var(--navy);
+  color: white;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 900;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.guide-step-title { font-size: 13px; font-weight: 800; margin-bottom: 4px; }
+.guide-step-desc  { font-size: 11px; color: var(--muted); line-height: 1.7; }
+.code-snippet {
+  background: #0f172a;
+  color: var(--green);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-family: monospace;
+  font-size: 11px;
+  margin-top: 8px;
+  overflow-x: auto;
+  direction: ltr;
+  text-align: left;
+  white-space: pre;
+}
+
+/* ── RESPONSIVE ── */
+@media(max-width: 400px) {
+  .action-grid { grid-template-columns: 1fr 1fr; }
+  .stat-row    { grid-template-columns: repeat(3,1fr); }
+}
+
+/* ── EMPTY STATE ── */
+.empty-state {
+  text-align: center;
+  padding: 28px 16px;
+  color: var(--muted);
+}
+.empty-state .e-ico { font-size: 38px; margin-bottom: 10px; }
+.empty-state p { font-size: 12px; line-height: 1.7; }
+
+/* ── SCHOOL TABLE ── */
+.sch-table { width: 100%; border-collapse: collapse; }
+.sch-table th {
+  text-align: right;
+  padding: 9px 11px;
+  font-size: 11px; font-weight: 700;
+  color: var(--muted);
+  background: var(--bg);
+}
+.sch-table td {
+  padding: 10px 11px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.sch-table tr:last-child td { border-bottom: none; }
+</style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════
+     SETUP — شاشة اختيار الدور
+════════════════════════════════════════ -->
+<div id="setupScreen">
+  <div class="setup-card">
+    <div class="setup-logo">
+      <div class="logo-icon">🛡️</div>
+      <h1>BusSafe</h1>
+      <p>نظام تتبع الحافلات المدرسية الذكي</p>
+    </div>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:14px;text-align:center">اختر دورك للدخول إلى التطبيق</p>
+    <div class="role-grid">
+      <button class="role-btn" onclick="enterApp('parent')">
+        <div class="role-ico" style="background:#f0fdf8">👨‍👧</div>
+        <div>
+          <div class="r-name">ولي الأمر</div>
+          <div class="r-desc">تابع موقع ابنك واستقبل الإشعارات</div>
+        </div>
+      </button>
+      <button class="role-btn" onclick="enterApp('driver')">
+        <div class="role-ico" style="background:#eff6ff">🚌</div>
+        <div>
+          <div class="r-name">السائق</div>
+          <div class="r-desc">سجّل أحداث الرحلة والطلاب</div>
+        </div>
+      </button>
+      <button class="role-btn" onclick="enterApp('school')">
+        <div class="role-ico" style="background:#fef9c3">🏫</div>
+        <div>
+          <div class="r-name">المدرسة</div>
+          <div class="r-desc">لوحة تحكم الحضور والحافلات</div>
+        </div>
+      </button>
+    </div>
+    <button class="btn btn-ghost btn-full" style="margin-top:4px" onclick="enterApp('setup')">
+      ⚙️ إعداد Firebase
+    </button>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════
+     MAIN APP
+════════════════════════════════════════ -->
+<div id="appScreen">
+
+  <!-- TOP BAR -->
+  <div class="topbar">
+    <button class="back-btn" onclick="goBack()">←</button>
+    <div class="topbar-logo">Bus<span>Safe</span></div>
+    <div class="topbar-role" id="topbarRole">ولي الأمر</div>
+    <div class="topbar-fb" style="margin-right:auto">
+      <div class="fb-dot" id="fbDot"></div>
+      <span class="fb-label" id="fbLabel">مباشر</span>
+    </div>
+  </div>
+
+  <!-- ══ PAGE: PARENT ══ -->
+  <div id="pageParent" class="page">
+
+    <!-- Hero -->
+    <div class="hero hero-state-idle" id="pHero">
+      <div class="live-badge"><div class="live-dot"></div>مباشر</div>
+      <div class="hero-ico" id="pHeroIco">⏳</div>
+      <div class="hero-lbl">حالة الرحلة</div>
+      <div class="hero-val" id="pHeroVal">في انتظار انطلاق الرحلة</div>
+      <div class="hero-sub" id="pHeroSub">ستصلك إشعارات تلقائية عند كل حدث</div>
+      <div class="hero-time" id="pHeroTime">—</div>
+    </div>
+
+    <!-- Timeline -->
+    <div class="card">
+      <div class="card-title">🗺️ مراحل الرحلة <span id="pProgLabel" style="font-size:11px;font-weight:600;color:var(--muted)">0٪</span></div>
+      <div class="timeline">
+        <div class="tl-step" id="tl0"><div class="tl-dot">🏠</div><div class="tl-lbl">المنزل</div></div>
+        <div class="tl-line" id="tll01"></div>
+        <div class="tl-step" id="tl1"><div class="tl-dot">🚌</div><div class="tl-lbl">الحافلة</div></div>
+        <div class="tl-line" id="tll12"></div>
+        <div class="tl-step" id="tl2"><div class="tl-dot">🏫</div><div class="tl-lbl">المدرسة</div></div>
+        <div class="tl-line" id="tll23"></div>
+        <div class="tl-step" id="tl3"><div class="tl-dot">🏠</div><div class="tl-lbl">العودة</div></div>
+      </div>
+      <div class="prog-bar"><div class="prog-fill" id="pProgBar" style="width:0%"></div></div>
+    </div>
+
+    <!-- Notifs -->
+    <div class="sec-label">🔔 الإشعارات الفورية</div>
+    <div class="card" style="padding:12px">
+      <div id="pNotifs">
+        <div class="empty-state">
+          <div class="e-ico">🔕</div>
+          <p>لا توجد إشعارات بعد<br>ستظهر هنا تلقائياً عند كل حدث في الرحلة</p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ══ PAGE: DRIVER ══ -->
+  <div id="pageDriver" class="page">
+
+    <!-- Stats -->
+    <div class="stat-row">
+      <div class="stat-box">
+        <div class="sb-ico">👦</div>
+        <div class="sb-val" id="dOnCount">0</div>
+        <div class="sb-lbl">على المتن</div>
+      </div>
+      <div class="stat-box">
+        <div class="sb-ico">🚦</div>
+        <div class="sb-val" id="dTripState" style="font-size:13px">متوقف</div>
+        <div class="sb-lbl">الحالة</div>
+      </div>
+      <div class="stat-box">
+        <div class="sb-ico">⏱️</div>
+        <div class="sb-val" id="dTimer" style="font-size:16px">00:00</div>
+        <div class="sb-lbl">مدة الرحلة</div>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="sec-label">⚡ أحداث الرحلة</div>
+    <div class="action-grid">
+      <button class="act-btn act-start"  onclick="driverAction('started')"><div class="act-ico">▶️</div>بدء الرحلة</button>
+      <button class="act-btn act-arrive" onclick="driverAction('arrived')"><div class="act-ico">🏫</div>وصلنا للمدرسة</button>
+      <button class="act-btn act-return" onclick="driverAction('returning')"><div class="act-ico">🏡</div>رحلة العودة</button>
+      <button class="act-btn act-sos"    onclick="driverAction('sos')"><div class="act-ico">🆘</div>طوارئ فورية</button>
+    </div>
+
+    <!-- Students -->
+    <div class="sec-label">👦 الطلاب — اضغط لتسجيل الصعود</div>
+    <div class="card" style="padding:12px" id="dStudentList"></div>
+
+  </div>
+
+  <!-- ══ PAGE: SCHOOL ══ -->
+  <div id="pageSchool" class="page">
+
+    <div class="stat-row">
+      <div class="stat-box">
+        <div class="sb-ico">🚌</div>
+        <div class="sb-val">1</div>
+        <div class="sb-lbl">حافلة نشطة</div>
+      </div>
+      <div class="stat-box">
+        <div class="sb-ico">✅</div>
+        <div class="sb-val" id="schOnCount">0</div>
+        <div class="sb-lbl">حضروا</div>
+      </div>
+      <div class="stat-box">
+        <div class="sb-ico">❌</div>
+        <div class="sb-val" id="schAbsCount">3</div>
+        <div class="sb-lbl">لم يصلوا</div>
+      </div>
+    </div>
+
+    <div class="sec-label">🏫 حضور الطلاب اليوم</div>
+    <div class="card" style="padding:0;overflow:hidden">
+      <table class="sch-table">
+        <thead>
+          <tr>
+            <th>الطالب</th>
+            <th>الحافلة</th>
+            <th>الحالة</th>
+            <th>الوقت</th>
+          </tr>
+        </thead>
+        <tbody id="schTable"></tbody>
+      </table>
+    </div>
+
+    <div class="sec-label">🔔 آخر الأحداث</div>
+    <div class="card" style="padding:12px">
+      <div id="schNotifs">
+        <div class="empty-state"><div class="e-ico">📋</div><p>لا توجد أحداث بعد</p></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ══ PAGE: SETUP ══ -->
+  <div id="pageSetup" class="page">
+    <div class="card">
+      <div class="card-title">🔥 ربط Firebase خطوة بخطوة</div>
+      <div class="step-guide">
+        <div class="guide-step">
+          <div>
+            <div class="guide-step-title">أنشئ مشروع Firebase مجاني</div>
+            <div class="guide-step-desc">
+              افتح <strong>console.firebase.google.com</strong> واضغط "Add project"، أدخل اسم المشروع مثلاً <strong>bussafe-uni</strong>، أوقف Google Analytics، ثم اضغط Create.
+            </div>
+          </div>
+        </div>
+        <div class="guide-step">
+          <div>
+            <div class="guide-step-title">فعّل Realtime Database</div>
+            <div class="guide-step-desc">
+              من القائمة الجانبية اختر <strong>Build → Realtime Database → Create Database</strong>، اختر أي منطقة، ثم اختر <strong>"Start in test mode"</strong> (للتجربة).
+            </div>
+          </div>
+        </div>
+        <div class="guide-step">
+          <div>
+            <div class="guide-step-title">احصل على مفاتيح التطبيق</div>
+            <div class="guide-step-desc">
+              اضغط أيقونة ⚙️ بجانب "Project Overview" → Project settings → مرر للأسفل → قسم "Your apps" → اضغط &lt;/&gt; → سجّل اسم التطبيق → انسخ الـ firebaseConfig.
+            </div>
+          </div>
+        </div>
+        <div class="guide-step">
+          <div>
+            <div class="guide-step-title">الصق المفاتيح في الكود</div>
+            <div class="guide-step-desc">
+              افتح ملف index.html في أي محرر نصوص (VS Code مثلاً)، ابحث عن <strong>firebaseConfig</strong> في أعلى الصفحة، والصق قيمك بدلاً من النص التجريبي.
+            </div>
+            <div class="code-snippet">const firebaseConfig = {
+  apiKey: "AIzaSy...",
+  authDomain: "bussafe-uni.firebaseapp.com",
+  databaseURL: "https://bussafe-uni-default-rtdb...",
+  projectId: "bussafe-uni",
+  ...
+};</div>
+          </div>
+        </div>
+        <div class="guide-step">
+          <div>
+            <div class="guide-step-title">ارفع الملف على GitHub + Vercel</div>
+            <div class="guide-step-desc">
+              أنشئ repository على <strong>github.com</strong>، ارفع ملف index.html، ثم اذهب لـ <strong>vercel.com</strong> واربطه بالـ repository — سيعطيك رابطاً مثل <strong>bussafe.vercel.app</strong> في 60 ثانية.
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="background:linear-gradient(135deg,#f0fdf8,#dcfce7);border-radius:12px;padding:14px;margin-top:4px">
+        <div style="font-size:12px;font-weight:800;margin-bottom:6px;color:var(--green2)">✅ بعد الإعداد</div>
+        <div style="font-size:11px;color:var(--muted);line-height:1.8">
+          — افتح الرابط على ثلاثة جوالات مختلفة<br>
+          — كل جوال يختار دوره من الشاشة الرئيسية<br>
+          — أي حدث من السائق يظهر فوراً عند ولي الأمر والمدرسة ✅
+        </div>
+      </div>
+    </div>
+    <button class="btn btn-green btn-full" onclick="goBack()">← رجوع للرئيسية</button>
+  </div>
+
+</div>
+
+<!-- MODAL -->
+<div class="modal-bg" id="modalBg">
+  <div class="modal">
+    <div class="modal-ico"   id="mIco">❓</div>
+    <div class="modal-title" id="mTitle">تأكيد</div>
+    <div class="modal-desc"  id="mDesc">هل أنت متأكد؟</div>
+    <div class="modal-btns">
+      <button class="mb-ok"     id="mOk"     onclick="doConfirm()">تأكيد</button>
+      <button class="mb-cancel" onclick="closeModal()">إلغاء</button>
+    </div>
+  </div>
+</div>
+
+<!-- TOAST -->
+<div class="toast" id="toast"></div>
+
+<script>
+/* ════════════════════════════════════════
+   STATE
+════════════════════════════════════════ */
+const STUDENTS = [
+  { id:'s1', name:'أحمد',   avatar:'أ', color:'#dbeafe', tc:'#1e40af', seat:'مقعد 2', status:'waiting' },
+  { id:'s2', name:'سارة',   avatar:'س', color:'#fce7f3', tc:'#9d174d', seat:'مقعد 5', status:'waiting' },
+  { id:'s3', name:'محمد',   avatar:'م', color:'#dcfce7', tc:'#166534', seat:'مقعد 8', status:'waiting' },
+];
+
+let state = {
+  trip:      'idle',   // idle | started | arrived | returning | home | sos
+  students:  {},       // {s1: 'waiting', s2: 'onbus', ...}
+  logs:      [],
+  tripStart: null,
+  timerInterval: null,
+};
+
+let currentRole = 'parent';
+let pendingAction = null;
+
+/* ════════════════════════════════════════
+   INIT student state
+════════════════════════════════════════ */
+STUDENTS.forEach(s => { state.students[s.id] = 'waiting'; });
+
+/* ════════════════════════════════════════
+   LOCAL HANDLERS (fallback بدون Firebase)
+════════════════════════════════════════ */
+window.localEventHandler = function(type, data) {
+  state.trip = type;
+  addLog({ type, message: data.message, time: data.time });
+  updateAllViews();
+};
+
+window.localStudentUpdate = function(id, status) {
+  state.students[id] = status;
+  updateAllViews();
+};
+
+// Firebase callbacks
+window.onTripUpdate = function(data) {
+  if (data.state) state.trip = data.state;
+  updateAllViews();
+};
+
+window.onLogsUpdate = function(logs) {
+  state.logs = logs.slice(0, 20);
+  renderParentNotifs();
+  renderSchoolNotifs();
+};
+
+window.onStudentsUpdate = function(data) {
+  Object.keys(data).forEach(id => {
+    if (data[id].status) state.students[id] = data[id].status;
+  });
+  updateAllViews();
+};
+
+/* ════════════════════════════════════════
+   NAVIGATION
+════════════════════════════════════════ */
+function enterApp(role) {
+  currentRole = role;
+  document.getElementById('setupScreen').style.display = 'none';
+  document.getElementById('appScreen').style.display = 'block';
+
+  const roleLabels = {
+    parent: 'ولي الأمر 👨‍👧',
+    driver: 'السائق 🚌',
+    school: 'المدرسة 🏫',
+    setup:  'الإعداد ⚙️'
+  };
+  document.getElementById('topbarRole').textContent = roleLabels[role] || role;
+
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  const pageMap = { parent:'pageParent', driver:'pageDriver', school:'pageSchool', setup:'pageSetup' };
+  const pg = document.getElementById(pageMap[role]);
+  if (pg) pg.classList.add('active');
+
+  if (role === 'parent') {
+    updateParentHero();
+    renderParentNotifs();
+    if (window.fbListen) window.fbListen();
+  }
+  if (role === 'driver') {
+    renderDriverStudents();
+  }
+  if (role === 'school') {
+    renderSchoolTable();
+    renderSchoolNotifs();
+  }
+}
+
+function goBack() {
+  document.getElementById('setupScreen').style.display = 'flex';
+  document.getElementById('appScreen').style.display = 'none';
+  if (state.timerInterval) { clearInterval(state.timerInterval); state.timerInterval = null; }
+}
+
+/* ════════════════════════════════════════
+   DRIVER ACTIONS
+════════════════════════════════════════ */
+const ACTION_CFG = {
+  started: {
+    ico:'▶️', title:'تأكيد بدء الرحلة',
+    desc:'سيُرسل إشعار فوري لجميع أولياء الأمور بانطلاق الحافلة.',
+    danger: false,
+    msg:'🚌 انطلقت الحافلة • سائق: خالد',
+    toast:'✅ انطلقت الرحلة — تم إبلاغ أولياء الأمور', tc:'green'
+  },
+  arrived: {
+    ico:'🏫', title:'تأكيد الوصول للمدرسة',
+    desc:'سيُرسل إشعار لجميع أولياء الأمور بوصول الحافلة بأمان.',
+    danger: false,
+    msg:'🏫 وصلنا للمدرسة بأمان ✅',
+    toast:'🏫 وصلتم بسلام!', tc:'green'
+  },
+  returning: {
+    ico:'🏡', title:'تأكيد بدء رحلة العودة',
+    desc:'سيُبلَّغ أولياء الأمور ببدء رحلة العودة نحو المنزل.',
+    danger: false,
+    msg:'🏡 بدأت رحلة العودة للمنزل',
+    toast:'🏡 رحلة العودة بدأت', tc:''
+  },
+  sos: {
+    ico:'🆘', title:'⚠️ إرسال تنبيه طوارئ!',
+    desc:'سيُرسل تنبيه عاجل لجميع أولياء الأمور والمدرسة فوراً! استخدمه فقط في حالات الطوارئ الحقيقية.',
+    danger: true,
+    msg:'🆘 طوارئ! السائق يحتاج مساعدة فورية',
+    toast:'🆘 تم إرسال تنبيه الطوارئ!', tc:'red'
+  },
+};
+
+function driverAction(type) {
+  const cfg = ACTION_CFG[type];
+  document.getElementById('mIco').textContent    = cfg.ico;
+  document.getElementById('mTitle').textContent  = cfg.title;
+  document.getElementById('mDesc').textContent   = cfg.desc;
+  const ok = document.getElementById('mOk');
+  ok.textContent = cfg.danger ? '🆘 نعم، أرسل الآن' : 'تأكيد ✅';
+  ok.className   = 'mb-ok' + (cfg.danger ? ' danger' : '');
+  pendingAction  = type;
+  document.getElementById('modalBg').classList.add('open');
+}
+
+function doConfirm() {
+  closeModal();
+  const type = pendingAction;
+  pendingAction = null;
+  const cfg = ACTION_CFG[type];
+  if (!cfg) return;
+
+  const t = nowTime();
+
+  // Start trip timer
+  if (type === 'started') {
+    state.tripStart = Date.now();
+    if (state.timerInterval) clearInterval(state.timerInterval);
+    state.timerInterval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - state.tripStart) / 1000);
+      const m = String(Math.floor(elapsed/60)).padStart(2,'0');
+      const s = String(elapsed % 60).padStart(2,'0');
+      const el = document.getElementById('dTimer');
+      if (el) el.textContent = `${m}:${s}`;
+    }, 1000);
+  }
+
+  // If arrived, mark all onbus students as arrived
+  if (type === 'arrived') {
+    STUDENTS.forEach(s => {
+      if (state.students[s.id] === 'onbus') {
+        state.students[s.id] = 'arrived';
+        if (window.fbUpdateStudent) window.fbUpdateStudent(s.id, 'arrived');
+      }
+    });
+  }
+
+  // If returning, mark arrived students back to onbus
+  if (type === 'returning') {
+    STUDENTS.forEach(s => {
+      if (state.students[s.id] === 'arrived') {
+        state.students[s.id] = 'onbus';
+        if (window.fbUpdateStudent) window.fbUpdateStudent(s.id, 'onbus');
+      }
+    });
+  }
+
+  const eventData = { message: cfg.msg, time: t };
+  if (window.fbSendEvent) {
+    window.fbSendEvent(type, eventData);
+  } else {
+    window.localEventHandler(type, eventData);
+  }
+
+  showToast(cfg.toast, cfg.tc);
+  updateDriverStats(type);
+}
+
+function updateDriverStats(type) {
+  const labels = { started:'متحرك', arrived:'وصل', returning:'عودة', sos:'طوارئ', idle:'متوقف' };
+  const el = document.getElementById('dTripState');
+  if (el) el.textContent = labels[type] || type;
+  renderDriverStudents();
+}
+
+/* ════════════════════════════════════════
+   STUDENT TOGGLE (Driver)
+════════════════════════════════════════ */
+function toggleStudent(id) {
+  if (state.trip === 'idle') {
+    showToast('⚠️ ابدأ الرحلة أولاً','amber');
+    return;
+  }
+  const s = STUDENTS.find(x => x.id === id);
+  if (!s) return;
+
+  const cur = state.students[id];
+  let next, msg, toastMsg, tc;
+
+  if (cur === 'waiting') {
+    next = 'onbus';
+    msg = `✅ صعد ${s.name} للحافلة • ${s.seat}`;
+    toastMsg = `✅ صعد ${s.name}`;
+    tc = 'green';
+  } else if (cur === 'onbus') {
+    next = 'waiting';
+    msg = `⚠️ ${s.name} لم يصعد — تراجع`;
+    toastMsg = `⚠️ تراجع ${s.name}`;
+    tc = 'amber';
+  } else {
+    return;
+  }
+
+  state.students[id] = next;
+  if (window.fbUpdateStudent) window.fbUpdateStudent(id, next);
+
+  addLog({ type: next === 'onbus' ? 'student_on' : 'student_off', message: msg, time: nowTime() });
+  showToast(toastMsg, tc);
+  renderDriverStudents();
+  updateAllViews();
+}
+
+function renderDriverStudents() {
+  const el = document.getElementById('dStudentList');
+  if (!el) return;
+
+  const STATUS = {
+    waiting:  { badge:'sb-wait',    label:'⏳ لم يصعد' },
+    onbus:    { badge:'sb-onbus',   label:'✅ على المتن' },
+    arrived:  { badge:'sb-arrived', label:'🏫 وصل' },
+    home:     { badge:'sb-home',    label:'🏠 في المنزل' },
+  };
+
+  el.innerHTML = STUDENTS.map(s => {
+    const st = STATUS[state.students[s.id]] || STATUS.waiting;
+    return `
+      <div class="student-row" onclick="toggleStudent('${s.id}')">
+        <div class="s-avatar" style="background:${s.color};color:${s.tc}">${s.avatar}</div>
+        <div style="flex:1">
+          <div class="s-name">${s.name}</div>
+          <div class="s-seat">${s.seat}</div>
+        </div>
+        <span class="s-badge ${st.badge}">${st.label}</span>
+      </div>`;
+  }).join('');
+
+  const onCount = STUDENTS.filter(s => state.students[s.id] === 'onbus').length;
+  const el2 = document.getElementById('dOnCount');
+  if (el2) el2.textContent = onCount;
+}
+
+/* ════════════════════════════════════════
+   PARENT VIEW
+════════════════════════════════════════ */
+const HERO_STATES = {
+  idle:      { cls:'hero-state-idle',    ico:'⏳', val:'في انتظار انطلاق الرحلة',      sub:'ستصلك إشعارات تلقائية عند كل حدث' },
+  started:   { cls:'hero-state-started', ico:'🚌', val:'الحافلة في الطريق إلى المدرسة', sub:'يتم تحديث الموقع كل 30 ثانية' },
+  arrived:   { cls:'hero-state-arrived', ico:'🏫', val:'وصلت الحافلة للمدرسة بأمان ✅',  sub:'جميع الطلاب داخل المدرسة' },
+  returning: { cls:'hero-state-return',  ico:'🏡', val:'الحافلة في طريق العودة للمنزل', sub:'سيصل ابنك قريباً' },
+  sos:       { cls:'hero-state-sos',     ico:'🆘', val:'⚠️ تنبيه طوارئ!',               sub:'السائق يحتاج مساعدة — اتصل الآن' },
+};
+
+function updateParentHero() {
+  const h = HERO_STATES[state.trip] || HERO_STATES.idle;
+  const el = document.getElementById('pHero');
+  if (!el) return;
+
+  el.className = 'hero ' + h.cls;
+  document.getElementById('pHeroIco').textContent = h.ico;
+  document.getElementById('pHeroVal').textContent = h.val;
+  document.getElementById('pHeroSub').textContent = h.sub;
+
+  const last = state.logs[0];
+  const tEl = document.getElementById('pHeroTime');
+  if (tEl) tEl.textContent = last ? last.time : '—';
+
+  // Timeline
+  const prog = { idle:0, started:30, arrived:65, returning:85, home:100, sos:30 };
+  const p = prog[state.trip] || 0;
+  const pBar = document.getElementById('pProgBar');
+  const pLbl = document.getElementById('pProgLabel');
+  if (pBar) pBar.style.width = p + '%';
+  if (pLbl) pLbl.textContent = p + '٪';
+
+  // Steps
+  ['tl0','tl1','tl2','tl3'].forEach(id => {
+    const el2 = document.getElementById(id);
+    if (el2) { el2.classList.remove('done','active'); }
+  });
+  ['tll01','tll12','tll23'].forEach(id => {
+    const el2 = document.getElementById(id);
+    if (el2) el2.classList.remove('done');
+  });
+
+  if (state.trip !== 'idle') {
+    ['tl0'].forEach(id => document.getElementById(id)?.classList.add('done'));
+    document.getElementById('tll01')?.classList.add('done');
+  }
+  if (state.trip === 'started') {
+    document.getElementById('tl1')?.classList.add('active');
+  }
+  if (['arrived','returning','home'].includes(state.trip)) {
+    document.getElementById('tl1')?.classList.add('done');
+    document.getElementById('tl2')?.classList.add('done');
+    document.getElementById('tll12')?.classList.add('done');
+  }
+  if (['returning','home'].includes(state.trip)) {
+    document.getElementById('tl3')?.classList.add(state.trip === 'home' ? 'done' : 'active');
+    document.getElementById('tll23')?.classList.add('done');
+  }
+}
+
+function renderParentNotifs() {
+  const el = document.getElementById('pNotifs');
+  if (!el) return;
+  if (!state.logs.length) {
+    el.innerHTML = '<div class="empty-state"><div class="e-ico">🔕</div><p>لا توجد إشعارات بعد<br>ستظهر هنا تلقائياً عند كل حدث</p></div>';
+    return;
+  }
+  const TYPE_COLOR = {
+    started:'blue', arrived:'green', returning:'amber',
+    sos:'red', student_on:'green', student_off:'amber', default:'navy'
+  };
+  const TYPE_ICO = {
+    started:'🚌', arrived:'🏫', returning:'🏡',
+    sos:'🆘', student_on:'✅', student_off:'⚠️', default:'📋'
+  };
+  el.innerHTML = state.logs.map(n => `
+    <div class="notif-row notif-${TYPE_COLOR[n.type]||'navy'}">
+      <div class="n-ico">${TYPE_ICO[n.type]||'📋'}</div>
+      <div class="n-body">
+        <div class="n-title">${n.message}</div>
+        <div class="n-sub">حافلة رقم 7 • ${n.time}</div>
+      </div>
+      <div class="n-time">${n.time}</div>
+    </div>`).join('');
+}
+
+/* ════════════════════════════════════════
+   SCHOOL VIEW
+════════════════════════════════════════ */
+function renderSchoolTable() {
+  const STATUS_LABEL = {
+    waiting:'⏳ لم يصعد', onbus:'🚌 في الحافلة', arrived:'🏫 وصل', home:'🏠 في المنزل'
+  };
+  const STATUS_COLOR = {
+    waiting:'color:#854d0e;background:#fef9c3',
+    onbus:  'color:#166534;background:#dcfce7',
+    arrived:'color:#1e40af;background:#dbeafe',
+    home:   'color:#0c4a6e;background:#e0f2fe'
+  };
+
+  const tbody = document.getElementById('schTable');
+  if (!tbody) return;
+
+  tbody.innerHTML = STUDENTS.map(s => {
+    const st = state.students[s.id] || 'waiting';
+    const sc = STATUS_COLOR[st] || STATUS_COLOR.waiting;
+    return `<tr>
+      <td><strong>${s.name}</strong></td>
+      <td>حافلة 7</td>
+      <td><span style="padding:3px 10px;border-radius:100px;font-size:10px;font-weight:700;${sc}">${STATUS_LABEL[st]}</span></td>
+      <td style="color:var(--muted)">${state.logs.find(l=>l.message?.includes(s.name))?.time || '—'}</td>
+    </tr>`;
+  }).join('');
+
+  const onCount = STUDENTS.filter(s => ['arrived','onbus'].includes(state.students[s.id])).length;
+  const absCount = STUDENTS.filter(s => state.students[s.id] === 'waiting').length;
+  const oc = document.getElementById('schOnCount');
+  const ac = document.getElementById('schAbsCount');
+  if (oc) oc.textContent = onCount;
+  if (ac) ac.textContent = absCount;
+}
+
+function renderSchoolNotifs() {
+  const el = document.getElementById('schNotifs');
+  if (!el) return;
+  if (!state.logs.length) {
+    el.innerHTML = '<div class="empty-state"><div class="e-ico">📋</div><p>لا توجد أحداث بعد</p></div>';
+    return;
+  }
+  const TYPE_COLOR = { started:'blue', arrived:'green', returning:'amber', sos:'red', student_on:'green', student_off:'amber' };
+  const TYPE_ICO   = { started:'🚌', arrived:'🏫', returning:'🏡', sos:'🆘', student_on:'✅', student_off:'⚠️' };
+  el.innerHTML = state.logs.slice(0,5).map(n => `
+    <div class="notif-row notif-${TYPE_COLOR[n.type]||'navy'}">
+      <div class="n-ico">${TYPE_ICO[n.type]||'📋'}</div>
+      <div class="n-body"><div class="n-title">${n.message}</div></div>
+      <div class="n-time">${n.time}</div>
+    </div>`).join('');
+}
+
+/* ════════════════════════════════════════
+   GLOBAL UPDATE
+════════════════════════════════════════ */
+function updateAllViews() {
+  if (currentRole === 'parent') { updateParentHero(); renderParentNotifs(); }
+  if (currentRole === 'driver') { renderDriverStudents(); }
+  if (currentRole === 'school') { renderSchoolTable(); renderSchoolNotifs(); }
+}
+
+/* ════════════════════════════════════════
+   LOG
+════════════════════════════════════════ */
+function addLog(entry) {
+  state.logs.unshift({ ...entry, time: entry.time || nowTime() });
+  if (state.logs.length > 30) state.logs.pop();
+}
+
+/* ════════════════════════════════════════
+   UTILS
+════════════════════════════════════════ */
+function nowTime() {
+  const d = new Date();
+  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
+
+let toastTimer;
+function showToast(msg, type='') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = `toast up t-${type}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.className = 'toast', 3200);
+}
+
+function closeModal() {
+  document.getElementById('modalBg').classList.remove('open');
+  pendingAction = null;
+}
+
+// Firebase status indicator
+setTimeout(() => {
+  const dot   = document.getElementById('fbDot');
+  const label = document.getElementById('fbLabel');
+  if (!dot || !label) return;
+  if (window.firebaseReady) {
+    dot.classList.remove('offline');
+    label.textContent = 'Firebase متصل';
+  } else {
+    dot.classList.add('offline');
+    label.textContent = 'وضع تجريبي';
+  }
+}, 1500);
+</script>
+</body>
+</html>
